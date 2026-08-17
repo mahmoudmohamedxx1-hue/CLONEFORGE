@@ -214,7 +214,7 @@ function titleCase(s: string): string {
   return s.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function heuristicProfile(url: string, host: string, kind: Kind, modeNote: string): SourceProfile {
+export function heuristicProfile(url: string, host: string, kind: Kind, modeNote: string): SourceProfile {
   const preset = findPreset(url, host);
   const seed = hashStr(host.toLowerCase() + "::" + kind);
   const r = rng(seed);

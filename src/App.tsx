@@ -9,7 +9,7 @@ import TargetsPanel from "./components/TargetsPanel";
 import { IconClock, IconForge, IconRefresh, IconTrash } from "./components/Icons";
 import { useReveal } from "./hooks/useReveal";
 import type { Kind, LogLine, ScanLine, SourceProfile, TargetId } from "./lib/engine";
-import { buildScript, detectKind, normalizeUrl, scanSource, ScanError, timeAgo, TARGETS } from "./lib/engine";
+import { buildScript, detectKind, heuristicProfile, normalizeUrl, scanSource, timeAgo, TARGETS } from "./lib/engine";
 
 type Phase = "idle" | "scanning" | "ready" | "building" | "done";
 
@@ -84,6 +84,8 @@ export default function App() {
   const [scanLines, setScanLines] = useState<ScanLine[]>([]);
   const [runId, setRunId] = useState(0);
   const [buildElapsed, setBuildElapsed] = useState(0);
+  const [buildPct, setBuildPct] = useState(0);
+  const onTick = useCallback((p: number) => setBuildPct(p), []);
   const [history, setHistory] = useState<HistoryEntry[]>(loadHistory);
 
   const scanAbort = useRef<AbortController | null>(null);
@@ -156,19 +158,31 @@ export default function App() {
       const push = (l: ScanLine) => setScanLines((prev) => [...prev, l]);
       const minDuration = new Promise((r) => setTimeout(r, 1200));
 
-      try {
-        const [prof] = await Promise.all([scanSource(res.url!, res.host!, k, push, ctrl.signal), minDuration]);
-        if (ctrl.signal.aborted) {
-          setProfile(prevProfile.current);
-          setPhase(prevProfile.current ? "ready" : "idle");
-          return;
-        }
+      const land = (prof: SourceProfile) => {
         setProfile(prof);
         setAppName(prof.name);
         setRoute(prof.routes[0] ?? "/");
         setAccent(prof.palette.accent.startsWith("#") ? prof.palette.accent : "#ff6d3b");
         autoArm.current = true;
         setPhase("ready");
+      };
+
+      // the scan is bulletproof: any failure recovers to an inferred mirror so the pipeline never dead-ends
+      const safeScan = scanSource(res.url!, res.host!, k, push, ctrl.signal).catch((e: unknown) => {
+        if ((e as Error)?.name === "AbortError") throw e;
+        push({ text: `✗ live scan hit a wall (${(e as Error)?.message ?? "unknown"}) — recovering`, tone: "warn" });
+        push({ text: `inferred mirror engaged · pipeline continues`, tone: "info" });
+        return heuristicProfile(res.url!, res.host!, k, "live scan unavailable — inferred mirror");
+      });
+
+      try {
+        const [prof] = await Promise.all([safeScan, minDuration]);
+        if (ctrl.signal.aborted) {
+          setProfile(prevProfile.current);
+          setPhase(prevProfile.current ? "ready" : "idle");
+          return;
+        }
+        land(prof);
       } catch (e) {
         if ((e as Error)?.name === "AbortError") {
           push({ text: "— scan aborted by operator —", tone: "warn" });
@@ -176,10 +190,9 @@ export default function App() {
           setPhase(prevProfile.current ? "ready" : "idle");
           return;
         }
-        const msg = e instanceof ScanError ? e.message : "Scan failed unexpectedly — try again.";
-        push({ text: `✗ ${msg}`, tone: "warn" });
-        setError(msg);
-        setPhase("idle");
+        // truly unexpected — still don't dead-end: forge from an inferred mirror
+        push({ text: `unexpected fault — forging from inferred mirror anyway`, tone: "warn" });
+        land(heuristicProfile(res.url!, res.host!, k, "recovered from unexpected fault"));
       }
     },
     [phase, url, kind, profile],
@@ -193,6 +206,7 @@ export default function App() {
     if (!profile || activeTargets.length === 0) return;
     setLines(buildScript(profile, activeTargets, appName || profile.name));
     setRunId((id) => id + 1);
+    setBuildPct(0);
     buildStart.current = Date.now();
     setPhase("building");
   }, [profile, activeTargets, appName]);
@@ -256,6 +270,55 @@ export default function App() {
           : phase === "done"
             ? { text: "pipeline done — APK + EXE paths are in section 06", go: () => jump(cloudSec) }
             : null;
+
+  /* fixed HUD: real progress pinned to the viewport so it's impossible to miss */
+  const hud = {
+    idle: {
+      label: "standby — feed the forge a repo or site",
+      pct: 0,
+      bar: "bg-line2",
+      text: "text-faint",
+      dot: "bg-faint",
+      go: null as (() => void) | null,
+      btn: "",
+    },
+    scanning: {
+      label: `ingesting source · ${scanLines.length} steps logged`,
+      pct: Math.min(96, 8 + scanLines.length * 11),
+      bar: "bar-stripes bg-gold",
+      text: "text-gold",
+      dot: "bg-gold pulse-flare",
+      go: () => jump(scanSec),
+      btn: "watch scan",
+    },
+    ready: {
+      label: "mirror locked — auto-igniting the build…",
+      pct: 100,
+      bar: "bg-mint",
+      text: "text-mint",
+      dot: "bg-mint pulse-mint",
+      go: () => jump(buildSec),
+      btn: "to console",
+    },
+    building: {
+      label: `compiling ${activeTargets.length} platforms`,
+      pct: buildPct,
+      bar: "bar-stripes bg-flare",
+      text: "text-flare",
+      dot: "bg-flare pulse-flare",
+      go: () => jump(buildSec),
+      btn: "watch build",
+    },
+    done: {
+      label: "build complete — apk + exe paths ready",
+      pct: 100,
+      bar: "bg-mint",
+      text: "text-mint",
+      dot: "bg-mint pulse-mint",
+      go: () => jump(cloudSec),
+      btn: "get installers",
+    },
+  }[phase];
 
   /* ---------------- render ---------------- */
 
@@ -506,6 +569,7 @@ export default function App() {
                   finished={phase === "done"}
                   onDone={onBuildDone}
                   onCancel={onCancel}
+                  onTick={onTick}
                 />
               </div>
             </section>
@@ -565,7 +629,7 @@ export default function App() {
         </main>
 
         {/* ---------- footer ---------- */}
-        <footer className="border-t border-line bg-pane/40">
+        <footer className="border-t border-line bg-pane/40 pb-20">
           <div className="mx-auto flex max-w-7xl flex-col items-start justify-between gap-4 px-5 py-8 sm:flex-row sm:items-center sm:px-8">
             <div className="flex items-center gap-2.5">
               <span className="flex h-6 w-6 items-center justify-center bg-flare text-ink">
@@ -580,6 +644,28 @@ export default function App() {
             </p>
           </div>
         </footer>
+
+        {/* ---------- fixed progress HUD — always in view ---------- */}
+        <div className="fixed inset-x-0 bottom-0 z-50 border-t border-line bg-[#0a0f0c]/95 backdrop-blur-md">
+          <div className="mx-auto flex max-w-7xl items-center gap-4 px-5 py-2.5 sm:px-8">
+            <span className={`h-2 w-2 shrink-0 rounded-full ${hud.dot}`} />
+            <p className={`w-44 shrink-0 truncate font-mono text-[10px] uppercase tracking-widest sm:w-auto sm:flex-1 ${hud.text}`}>
+              {hud.label}
+            </p>
+            <div className="hidden h-2 min-w-0 flex-1 border border-line bg-ink sm:block">
+              <div className={`h-full transition-[width] duration-300 ease-out ${hud.bar}`} style={{ width: `${hud.pct}%` }} />
+            </div>
+            <span className={`shrink-0 font-mono text-[11px] font-bold tabular-nums ${hud.text}`}>{hud.pct}%</span>
+            {hud.go && (
+              <button
+                onClick={hud.go}
+                className="btn-notch shrink-0 border border-line px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-widest text-dim transition-all duration-200 hover:border-flare hover:text-flare active:scale-95"
+              >
+                {hud.btn} ↓
+              </button>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

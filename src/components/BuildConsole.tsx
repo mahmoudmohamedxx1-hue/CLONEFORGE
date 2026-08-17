@@ -10,6 +10,7 @@ interface Props {
   finished: boolean;
   onDone: () => void;
   onCancel: () => void;
+  onTick?: (pct: number) => void;
 }
 
 const toneColor: Record<string, string> = {
@@ -19,12 +20,17 @@ const toneColor: Record<string, string> = {
   warn: "text-gold",
 };
 
-export default function BuildConsole({ lines, targets, running, finished, onDone, onCancel }: Props) {
+export default function BuildConsole({ lines, targets, running, finished, onDone, onCancel, onTick }: Props) {
   const [n, setN] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const doneRef = useRef(false);
   const startRef = useRef(Date.now());
+
+  /* report real progress to the global HUD */
+  useEffect(() => {
+    onTick?.(Math.round((n / Math.max(1, lines.length)) * 100));
+  }, [n, lines.length, onTick]);
 
   useEffect(() => {
     if (!running) return;
