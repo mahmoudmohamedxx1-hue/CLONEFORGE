@@ -128,7 +128,7 @@ export default function ConsoleInput({ kind, setKind, url, setUrl, onForge, scan
         </button>
         <p className="mt-3 flex items-center gap-1.5 font-mono text-[11px] leading-relaxed text-faint">
           <IconForge size={12} className="shrink-0 text-mint" />
-          mirrors the UI, adapts layouts, packages mobile + desktop shells
+          github repos are fetched live (api.github.com) · mirrors the UI · packages mobile + desktop shells
         </p>
       </div>
 

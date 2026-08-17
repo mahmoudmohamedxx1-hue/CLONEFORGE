@@ -7,8 +7,8 @@ import ScanReport from "./components/ScanReport";
 import TargetsPanel from "./components/TargetsPanel";
 import { IconClock, IconForge, IconRefresh, IconTrash } from "./components/Icons";
 import { useReveal } from "./hooks/useReveal";
-import type { Kind, LogLine, SourceProfile, TargetId } from "./lib/engine";
-import { buildScript, detectKind, normalizeUrl, scanSource, timeAgo, TARGETS } from "./lib/engine";
+import type { Kind, LogLine, ScanLine, SourceProfile, TargetId } from "./lib/engine";
+import { buildScript, detectKind, normalizeUrl, scanSource, ScanError, timeAgo, TARGETS } from "./lib/engine";
 
 type Phase = "idle" | "scanning" | "ready" | "building" | "done";
 
@@ -80,11 +80,13 @@ export default function App() {
   const [accent, setAccent] = useState("#ff6d3b");
   const [route, setRoute] = useState("/");
   const [lines, setLines] = useState<LogLine[]>([]);
+  const [scanLines, setScanLines] = useState<ScanLine[]>([]);
   const [runId, setRunId] = useState(0);
   const [buildElapsed, setBuildElapsed] = useState(0);
   const [history, setHistory] = useState<HistoryEntry[]>(loadHistory);
 
-  const scanTimer = useRef<number | null>(null);
+  const scanAbort = useRef<AbortController | null>(null);
+  const prevProfile = useRef<SourceProfile | null>(null);
   const buildStart = useRef(0);
   const scanSec = useRef<HTMLDivElement>(null);
   const buildSec = useRef<HTMLDivElement>(null);
@@ -106,9 +108,12 @@ export default function App() {
     }
   }, [history]);
 
-  useEffect(() => () => {
-    if (scanTimer.current) window.clearTimeout(scanTimer.current);
-  }, []);
+  useEffect(
+    () => () => {
+      scanAbort.current?.abort();
+    },
+    [],
+  );
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -122,7 +127,7 @@ export default function App() {
   /* ---------------- actions ---------------- */
 
   const forge = useCallback(
-    (raw?: string, kindOverride?: Kind) => {
+    async (raw?: string, kindOverride?: Kind) => {
       if (phase === "scanning") return;
       const value = raw ?? url;
       const res = normalizeUrl(value);
@@ -130,26 +135,53 @@ export default function App() {
         setError(res.reason ?? "Invalid URL.");
         return;
       }
-      const k = kindOverride ?? (raw ? detectKind(raw) : kind);
-      if (raw) {
-        setUrl(raw);
+      // always trust the URL itself: github/gitlab/bitbucket links force the repo path
+      const k = kindOverride ?? detectKind(res.url!);
+      if (raw || k !== kind) {
+        if (raw) setUrl(raw);
         setKind(k);
       }
       setError(null);
-      setPhase("scanning");
+      setScanLines([]);
+      prevProfile.current = profile;
       setProfile(null);
-      if (scanTimer.current) window.clearTimeout(scanTimer.current);
-      scanTimer.current = window.setTimeout(() => {
-        const prof = scanSource(res.url!, res.host!, k);
+      setPhase("scanning");
+
+      scanAbort.current?.abort();
+      const ctrl = new AbortController();
+      scanAbort.current = ctrl;
+      const push = (l: ScanLine) => setScanLines((prev) => [...prev, l]);
+      const minDuration = new Promise((r) => setTimeout(r, 1200));
+
+      try {
+        const [prof] = await Promise.all([scanSource(res.url!, res.host!, k, push, ctrl.signal), minDuration]);
+        if (ctrl.signal.aborted) {
+          setProfile(prevProfile.current);
+          setPhase(prevProfile.current ? "ready" : "idle");
+          return;
+        }
         setProfile(prof);
         setAppName(prof.name);
-        setRoute(prof.routes[0]);
+        setRoute(prof.routes[0] ?? "/");
         setAccent(prof.palette.accent.startsWith("#") ? prof.palette.accent : "#ff6d3b");
         setPhase("ready");
-      }, 2300);
+      } catch (e) {
+        if ((e as Error)?.name === "AbortError") {
+          push({ text: "— scan aborted by operator —", tone: "warn" });
+          setProfile(prevProfile.current);
+          setPhase(prevProfile.current ? "ready" : "idle");
+          return;
+        }
+        const msg = e instanceof ScanError ? e.message : "Scan failed unexpectedly — try again.";
+        push({ text: `✗ ${msg}`, tone: "warn" });
+        setError(msg);
+        setPhase("idle");
+      }
     },
-    [phase, url, kind],
+    [phase, url, kind, profile],
   );
+
+  const cancelScan = useCallback(() => scanAbort.current?.abort(), []);
 
   const activeTargets = useMemo(() => TARGETS.filter((t) => targets[t.id]).map((t) => t.id), [targets]);
 
@@ -245,9 +277,10 @@ export default function App() {
                 </span>
               </h1>
               <p className="mt-7 max-w-xl text-[15px] leading-relaxed text-dim">
-                CloneForge ingests a <strong className="font-semibold text-paper">public repository</strong> or a{" "}
-                <strong className="font-semibold text-paper">live website</strong>, mirrors its interface, adapts the
-                layout for touch and desktop, then packages signed shells for{" "}
+                CloneForge connects <strong className="font-semibold text-mint">live to the GitHub API</strong> — repo
+                metadata, the full file tree, even <span className="font-mono text-[13px]">package.json</span> — or
+                fingerprints a <strong className="font-semibold text-paper">live website</strong>, mirrors its
+                interface, adapts the layout for touch and desktop, then packages signed shells for{" "}
                 <strong className="font-semibold text-paper">Android, iOS, Windows, macOS, Linux</strong> and an
                 offline <strong className="font-semibold text-paper">PWA</strong> — in one pass.
               </p>
@@ -344,6 +377,8 @@ export default function App() {
                 scanning={phase === "scanning"}
                 accent={accent}
                 onPickAccent={setAccent}
+                lines={scanLines}
+                onCancelScan={cancelScan}
               />
             </div>
           </section>
