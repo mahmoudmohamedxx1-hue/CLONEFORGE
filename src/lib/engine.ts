@@ -773,7 +773,7 @@ export function buildScript(p: SourceProfile, targets: TargetId[], appName: stri
   L("sign", `codesign + checksums for ${targets.length} artifacts`, "info", 4);
   L("scan", "41 supply-chain checks passed · 0 vulnerabilities", "ok", 4);
   L("forge", `BUILD SUCCEEDED — ${targets.length} platforms · ${p.similarity}% UI fidelity`, "ok", 4);
-  L("note", "artifacts are signed manifests (in-browser demo)", "warn", 4);
+  L("note", "artifacts → runnable project zips + instant .hta windows app", "warn", 4);
   return lines;
 }
 

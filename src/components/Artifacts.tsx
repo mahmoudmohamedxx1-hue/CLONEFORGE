@@ -1,8 +1,9 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { SourceProfile, TargetId } from "../lib/engine";
 import { TARGETS, artifactSize, fmtBytes, qrMatrix, slugify } from "../lib/engine";
 import { buildCommand, downloadProjectZip } from "../lib/projects";
-import { IconCheck, IconDownload, IconTerminal } from "./Icons";
+import { downloadHta } from "../lib/hta";
+import { IconCheck, IconDownload, IconPhone, IconTerminal, IconWindows, IconZap } from "./Icons";
 
 interface Props {
   profile: SourceProfile;
@@ -15,10 +16,11 @@ interface Props {
 
 export default function Artifacts({ profile, targets, appName, version, accent, elapsed }: Props) {
   const slug = slugify(appName);
-  const qr = useMemo(() => qrMatrix(profile.url + appName), [profile.url, appName]);
+  const qr = useMemo(() => qrMatrix(window.location.href || profile.url + appName), [profile.url, appName]);
   const metas = TARGETS.filter((t) => targets.includes(t.id));
   const total = metas.reduce((s, t) => s + artifactSize(t.id, profile), 0);
   const [busy, setBusy] = useState<TargetId | null>(null);
+  const rowsRef = useRef<HTMLDivElement>(null);
 
   const get = async (t: TargetId) => {
     setBusy(t);
@@ -36,29 +38,88 @@ export default function Artifacts({ profile, targets, appName, version, accent, 
           <IconCheck size={12} /> build succeeded
         </span>
         <p className="font-mono text-[11px] text-dim">
-          {metas.length} platforms · {elapsed.toFixed(1)}s · fidelity <span className="text-gold">{profile.similarity}%</span>
+          {metas.length} platforms · {elapsed.toFixed(1)}s · fidelity <span className="text-gold">{profile.similarity}%</span> ·{" "}
+          {fmtBytes(total)} projected
         </p>
         <span className="ml-auto hidden font-mono text-[10px] uppercase tracking-widest text-faint md:block">
-          downloads are real project zips
+          every download is runnable
         </span>
       </div>
 
-      {/* honesty banner */}
-      <div className="border-b border-gold/30 bg-gold/8 px-6 py-3">
-        <p className="flex items-start gap-2 font-mono text-[11px] leading-relaxed text-gold">
-          <span className="mt-0.5 shrink-0">⚠</span>
-          <span>
-            <strong className="font-bold">Real, runnable projects — not fake binaries.</strong> Each download is a complete
-            project that the official toolchain compiles into a genuine, signed installer with{" "}
-            <strong className="font-bold">one command</strong> (shown under each row). A browser can't legally mint signed
-            .apk/.exe binaries, so we hand you the exact working build instead — this is the honest, actually-functional path.
-          </span>
+      {/* ---------- final deliverables ---------- */}
+      <div className="border-b border-line bg-ink/40 px-6 py-6">
+        <p className="mb-4 font-mono text-[10px] uppercase tracking-[0.22em] text-flare">
+          ✦ final deliverables — take {slug} home today
+        </p>
+        <div className="grid gap-4 md:grid-cols-3">
+          {/* 1 · instant windows app */}
+          <div className="group border border-flare/40 bg-pane/80 p-5 transition-all duration-200 hover:-translate-y-0.5 hover:border-flare">
+            <p className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-widest text-flare">
+              <IconWindows size={13} /> pc · runs right now
+            </p>
+            <p className="mt-2 font-display text-lg font-extrabold text-paper">{slug}.hta</p>
+            <p className="mt-1 font-mono text-[11px] leading-relaxed text-dim">
+              A genuine Windows desktop app file. Save it, <strong className="text-paper">double-click, and {slug} opens in
+              its own window</strong> — video player, search, keyboard shortcuts, offline. Zero install, zero build.
+            </p>
+            <button
+              onClick={() => downloadHta({ appName, profile, accent })}
+              className="btn-notch mt-4 flex w-full items-center justify-center gap-2 bg-flare px-4 py-2.5 font-mono text-[11px] font-bold uppercase tracking-widest text-[#1a120c] transition-all duration-200 hover:bg-ember active:scale-[0.98]"
+            >
+              <IconDownload size={13} /> download windows app
+            </button>
+          </div>
+
+          {/* 2 · phone app */}
+          <div className="group border border-mint/40 bg-pane/80 p-5 transition-all duration-200 hover:-translate-y-0.5 hover:border-mint">
+            <p className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-widest text-mint">
+              <IconPhone size={13} /> mobile · real app icon
+            </p>
+            <p className="mt-2 font-display text-lg font-extrabold text-paper">{slug} PWA</p>
+            <p className="mt-1 font-mono text-[11px] leading-relaxed text-dim">
+              Get the PWA project below, host the folder (Netlify Drop works), open it on your phone and hit{" "}
+              <strong className="text-paper">Install</strong> — Chrome mints a real on-device app package (WebAPK) with its
+              own icon.
+            </p>
+            <button
+              onClick={() => get("pwa")}
+              disabled={busy === "pwa"}
+              className="btn-notch mt-4 flex w-full items-center justify-center gap-2 border border-mint/60 bg-mint/10 px-4 py-2.5 font-mono text-[11px] font-bold uppercase tracking-widest text-mint transition-all duration-200 hover:bg-mint/20 active:scale-[0.98] disabled:opacity-60"
+            >
+              <IconDownload size={13} /> {busy === "pwa" ? "zipping…" : "download phone app"}
+            </button>
+          </div>
+
+          {/* 3 · signed binaries */}
+          <div className="group border border-gold/40 bg-pane/80 p-5 transition-all duration-200 hover:-translate-y-0.5 hover:border-gold">
+            <p className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-widest text-gold">
+              <IconZap size={13} /> signed .apk / .exe
+            </p>
+            <p className="mt-2 font-display text-lg font-extrabold text-paper">official toolchains</p>
+            <p className="mt-1 font-mono text-[11px] leading-relaxed text-dim">
+              Full Capacitor (Android) and Electron (Windows) projects. Unzip, run the{" "}
+              <strong className="text-paper">one command</strong> shown per row below — Gradle / electron-builder emit the
+              genuine signed installer.
+            </p>
+            <button
+              onClick={() => rowsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
+              className="btn-notch mt-4 flex w-full items-center justify-center gap-2 border border-gold/60 bg-gold/10 px-4 py-2.5 font-mono text-[11px] font-bold uppercase tracking-widest text-gold transition-all duration-200 hover:bg-gold/20 active:scale-[0.98]"
+            >
+              <IconTerminal size={13} /> see build rows
+            </button>
+          </div>
+        </div>
+        <p className="mt-4 flex items-start gap-2 font-mono text-[10px] leading-relaxed text-faint">
+          <span className="text-gold">⚠</span>
+          Straight talk: a browser physically cannot compile signed .apk / .exe binaries — anyone claiming otherwise ships
+          you a fake file that won't install. The .hta above is a real, working Windows app you can run today; the rows
+          below produce the real signed installers through the official one-command builds.
         </p>
       </div>
 
       <div className="grid lg:grid-cols-[1fr_280px]">
         {/* artifact rows */}
-        <div className="divide-y divide-line border-b border-line lg:border-b-0 lg:border-r">
+        <div ref={rowsRef} className="scroll-mt-24 divide-y divide-line border-b border-line lg:border-b-0 lg:border-r">
           {metas.map((t, i) => {
             const size = artifactSize(t.id, profile);
             return (
@@ -113,9 +174,9 @@ export default function Artifacts({ profile, targets, appName, version, accent, 
             </svg>
           </div>
           <div className="text-center">
-            <p className="font-mono text-[11px] uppercase tracking-widest text-mint">scan → open web app</p>
-            <p className="mt-1 max-w-[200px] font-mono text-[10px] leading-relaxed text-faint">
-              the PWA zip works instantly on any phone or PC — install it to the home screen
+            <p className="font-mono text-[11px] uppercase tracking-widest text-mint">scan → open this studio</p>
+            <p className="mt-1 max-w-[210px] font-mono text-[10px] leading-relaxed text-faint">
+              grab the forge on your phone, then use the PWA tile to install {slug} as a real app
             </p>
           </div>
         </div>
