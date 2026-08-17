@@ -91,8 +91,10 @@ export default function App() {
   const buildStart = useRef(0);
   const scanSec = useRef<HTMLDivElement>(null);
   const buildSec = useRef<HTMLDivElement>(null);
+  const previewSec = useRef<HTMLDivElement>(null);
   const cloudSec = useRef<HTMLDivElement>(null);
   const artifactSec = useRef<HTMLDivElement>(null);
+  const autoArm = useRef(false);
 
   const revealFeed = useReveal<HTMLDivElement>();
   const revealMarquee = useReveal<HTMLDivElement>();
@@ -165,6 +167,7 @@ export default function App() {
         setAppName(prof.name);
         setRoute(prof.routes[0] ?? "/");
         setAccent(prof.palette.accent.startsWith("#") ? prof.palette.accent : "#ff6d3b");
+        autoArm.current = true;
         setPhase("ready");
       } catch (e) {
         if ((e as Error)?.name === "AbortError") {
@@ -215,10 +218,44 @@ export default function App() {
 
   const onCancel = useCallback(() => setPhase("ready"), []);
 
+  /* auto-ignite: once the mirror locks, the build fires on its own — no button hunting */
+  const runBuildRef = useRef(runBuild);
+  useEffect(() => {
+    runBuildRef.current = runBuild;
+  }, [runBuild]);
+  useEffect(() => {
+    if (phase !== "ready" || !autoArm.current) return;
+    autoArm.current = false;
+    const t = setTimeout(() => runBuildRef.current(), 1400);
+    return () => clearTimeout(t);
+  }, [phase]);
+
   const showTargets = profile && phase !== "scanning";
   const showBuild = lines.length > 0 && (phase === "building" || phase === "done");
   const showPreview = profile && phase !== "scanning";
   const status = STATUS[phase];
+
+  /* pipeline tracker: always-visible breadcrumb so nobody gets lost */
+  const stepOrder = { idle: 0, scanning: 1, ready: 2, building: 2, done: 4 }[phase];
+  const jump = (r: { current: HTMLDivElement | null }) =>
+    r.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const TRACK: { label: string; go: (() => void) | null }[] = [
+    { label: "source", go: null },
+    { label: "scan", go: () => jump(scanSec) },
+    { label: "build", go: showBuild ? () => jump(buildSec) : null },
+    { label: "preview", go: () => jump(previewSec) },
+    { label: "installers", go: phase === "done" ? () => jump(cloudSec) : null },
+  ];
+  const ticker =
+    phase === "scanning"
+      ? { text: "ingesting source — report lands in section 02", go: () => jump(scanSec) }
+      : phase === "ready"
+        ? { text: "mirror locked — auto-igniting the build…", go: () => jump(buildSec) }
+        : phase === "building"
+          ? { text: "compiling every armed platform live — watch the console", go: () => jump(buildSec) }
+          : phase === "done"
+            ? { text: "pipeline done — APK + EXE paths are in section 06", go: () => jump(cloudSec) }
+            : null;
 
   /* ---------------- render ---------------- */
 
@@ -254,6 +291,40 @@ export default function App() {
               <span className={`h-1.5 w-1.5 rounded-full ${status.dot}`} />
               {status.label}
             </span>
+          </div>
+          {/* pipeline tracker — always visible, click to jump */}
+          <div className="border-t border-line/70 bg-[#0a0f0c]/95">
+            <div className="mx-auto flex max-w-7xl items-center gap-1 overflow-x-auto px-5 py-2 sm:px-8">
+              <span className="mr-2 shrink-0 font-mono text-[9px] uppercase tracking-[0.25em] text-faint">
+                pipeline
+              </span>
+              {TRACK.map((s, i) => {
+                const st = i < stepOrder ? "done" : i === stepOrder ? "active" : "wait";
+                return (
+                  <span key={s.label} className="flex items-center gap-1">
+                    {i > 0 && <span className="px-1 font-mono text-[10px] text-faint">›</span>}
+                    <button
+                      onClick={s.go ?? undefined}
+                      disabled={!s.go}
+                      className={`flex items-center gap-1.5 border px-2 py-0.5 font-mono text-[9.5px] uppercase tracking-widest transition-all duration-200 ${
+                        st === "done"
+                          ? "border-mint/30 bg-mint/5 text-mint/80"
+                          : st === "active"
+                            ? "border-flare/50 bg-flare/10 text-flare"
+                            : "border-transparent text-faint"
+                      } ${s.go ? "cursor-pointer hover:border-line2 hover:text-paper" : "cursor-default"}`}
+                    >
+                      <span
+                        className={`h-1.5 w-1.5 rounded-full ${
+                          st === "done" ? "bg-mint" : st === "active" ? "bg-flare pulse-flare" : "bg-line2"
+                        }`}
+                      />
+                      {s.label}
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
           </div>
         </header>
 
@@ -350,6 +421,18 @@ export default function App() {
                 scanning={phase === "scanning"}
                 error={error}
               />
+              {ticker && (
+                <p className="log-pop mt-3 flex items-center gap-2.5 border border-line bg-pane/80 px-4 py-3 font-mono text-[11px] text-dim">
+                  <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${status.dot}`} />
+                  <span className="flex-1">{ticker.text}</span>
+                  <button
+                    onClick={ticker.go}
+                    className="shrink-0 font-mono text-[10px] font-bold uppercase tracking-widest text-flare transition-colors hover:text-ember"
+                  >
+                    jump ↓
+                  </button>
+                </p>
+              )}
             </div>
           </section>
 
@@ -370,7 +453,7 @@ export default function App() {
           </div>
 
           {/* ---------- 02 scan report ---------- */}
-          <section ref={scanSec} className="scroll-mt-24 pt-14">
+          <section ref={scanSec} className="scroll-mt-28 pt-14">
             <div ref={revealScan} className="reveal">
               <SectionHead no="02" title="Scan report" note={profile ? `source: ${profile.host}` : "awaiting source"} />
               <ScanReport
@@ -386,7 +469,7 @@ export default function App() {
 
           {/* ---------- 03 targets ---------- */}
           {showTargets && profile && (
-            <section className="pt-14">
+            <section className="scroll-mt-28 pt-14">
               <div ref={revealTargets} className="reveal">
                 <SectionHead no="03" title="Targets & identity" note={`${activeTargets.length} platforms armed`} />
                 <TargetsPanel
@@ -408,7 +491,7 @@ export default function App() {
 
           {/* ---------- 04 build console ---------- */}
           {showBuild && (
-            <section ref={buildSec} className="scroll-mt-24 pt-14">
+            <section ref={buildSec} className="scroll-mt-28 pt-14">
               <div ref={revealBuild} className="reveal is-in">
                 <SectionHead
                   no="04"
@@ -430,7 +513,7 @@ export default function App() {
 
           {/* ---------- 05 preview ---------- */}
           {showPreview && profile && (
-            <section className="pt-14">
+            <section ref={previewSec} className="scroll-mt-28 pt-14">
               <div ref={revealPreview} className="reveal">
                 <SectionHead no={phase === "done" ? "05" : "04"} title="Live preview" note="same bundle · every shell" />
                 <div className="border border-line bg-pane/60 p-6 sm:p-10">
@@ -448,7 +531,7 @@ export default function App() {
 
           {/* ---------- 06 cloud forge ---------- */}
           {phase === "done" && profile && (
-            <section ref={cloudSec} className="scroll-mt-24 pt-14">
+            <section ref={cloudSec} className="scroll-mt-28 pt-14">
               <div className="reveal is-in">
                 <SectionHead no="06" title="Cloud forge" note="real .apk + .exe via github runners" />
                 <CloudForge profile={profile} appName={appName || profile.name} version={version} accent={accent} />
@@ -458,7 +541,7 @@ export default function App() {
 
           {/* ---------- 07 artifacts ---------- */}
           {phase === "done" && profile && (
-            <section ref={artifactSec} className="scroll-mt-24 pb-20 pt-14">
+            <section ref={artifactSec} className="scroll-mt-28 pb-20 pt-14">
               <div ref={revealArtifacts} className="reveal is-in">
                 <SectionHead no="07" title="Artifacts" note="local builds · runnable projects" />
                 <Artifacts
