@@ -147,15 +147,30 @@ function appManifestJson(o: GenOpts, slug: string): string {
 
 /* ---------------- the CI workflow ---------------- */
 
-export function workflowYaml(appName: string): string {
+export function workflowYaml(appName: string, fromZip = true): string {
+  const unpack = fromZip
+    ? `      - name: Unpack app project
+        run: |
+          mkdir -p build-app
+          cd build-app
+          unzip -o ../cloneforge/app.zip
+
+`
+    : "";
+  const wd = fromZip ? "build-app/" : "";
+  const cwd = fromZip ? `\n        working-directory: build-app` : "";
+  const pushPaths = fromZip
+    ? `    paths: ["cloneforge/**", ".github/workflows/cloneforge.yml"]`
+    : `    paths: [".github/workflows/cloneforge.yml", "index.html", "package.json", "main.js", "capacitor.config.json"]`;
+
   return `# CloneForge CI — compiles the REAL installers on GitHub's free runners.
-# Pushed automatically by CloneForge. Android SDK + Node come with ubuntu-latest.
+# Android SDK + Node ship with ubuntu-latest; NSIS cross-builds the Windows EXE from Linux.
 name: CloneForge Build
 
 on:
   workflow_dispatch:
   push:
-    paths: ["cloneforge/**", ".github/workflows/cloneforge.yml"]
+${pushPaths}
 
 jobs:
   build:
@@ -169,37 +184,28 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: "17" }
 
-      - name: Unpack app project
-        run: |
-          mkdir -p build-app
-          cd build-app
-          unzip -o ../cloneforge/app.zip
-
-      - name: Install + build web bundle
-        working-directory: build-app
+${unpack}      - name: Install + build web bundle${cwd}
         run: |
           npm install --no-audit --no-fund
           npm run build
 
-      - name: Compile Android APK
-        working-directory: build-app
+      - name: Compile Android APK${cwd}
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
           npx cap add android
           npx cap sync android
-          cd android
+          cd ${wd}android
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
 
-      - name: Compile Windows EXE (NSIS, cross-built from Linux)
-        working-directory: build-app
+      - name: Compile Windows EXE (NSIS, cross-built from Linux)${cwd}
         run: npx electron-builder --win nsis --x64
 
       - name: Collect installers
         run: |
           mkdir -p out
-          cp build-app/android/app/build/outputs/apk/debug/app-debug.apk "out/${appName}-android.apk" || true
-          cp build-app/release/*.exe out/ || true
+          cp ${wd}android/app/build/outputs/apk/debug/app-debug.apk "out/${appName}-android.apk" || true
+          cp ${wd}release/*.exe out/ || true
           ls -la out
 
       - uses: actions/upload-artifact@v4
@@ -208,6 +214,74 @@ jobs:
           path: out
           if-no-files-found: error
 `;
+}
+
+/* ---------------- zero-token push bundle ---------------- */
+
+function pushMeMd(appName: string, slug: string): string {
+  return `# ${appName} — get your real .apk + .exe (nothing to paste)
+
+Everything in this folder IS the app + the cloud-build recipe.
+GitHub's free runners compile it the moment you push it.
+
+## Three steps
+
+1) Install GitHub CLI (one-time):  https://cli.github.com  — or:  winget install GitHub.cli
+
+2) Open a terminal INSIDE this folder, then run:
+
+       gh auth login
+
+   Choose:  GitHub.com  →  HTTPS  →  Login with a browser
+   It shows a one-time code and opens your browser — you click Authorize. Done.
+   (That's a browser click. No token is copied or pasted anywhere.)
+
+3) Push everything:
+
+       gh repo create ${slug} --public --source=. --push
+
+## Then
+
+Open   https://github.com/<YOU>/${slug}/actions
+
+The run "CloneForge Build" starts by itself (push trigger).
+A brand-new repo may ask for one click: "Approve and run".
+
+~8 minutes later → open the run → Artifacts → installers → download.
+You get  ${appName}-android.apk  and  ${appName}-Setup.exe  — the real installers.
+`;
+}
+
+export async function makePushBundle(o: GenOpts): Promise<Blob> {
+  const slug = slugify(o.appName);
+  const zip = new JSZip();
+  zip.file("index.html", workingAppHtml(o));
+  zip.file("manifest.webmanifest", appManifestJson(o, slug));
+  zip.file("icon.svg", appIcon(o));
+  zip.file("main.js", electronMain(o));
+  zip.file("package.json", cloudPackageJson(o, slug));
+  zip.file(
+    "capacitor.config.json",
+    JSON.stringify(
+      { appId: `com.cloneforge.${slug}`, appName: o.appName, webDir: "dist", server: { androidScheme: "https" } },
+      null,
+      2,
+    ),
+  );
+  zip.file(".github/workflows/cloneforge.yml", workflowYaml(o.appName, false));
+  zip.file(".gitignore", "node_modules/\ndist/\nrelease/\nandroid/\n.DS_Store\n");
+  zip.file("PUSH_ME.md", pushMeMd(o.appName, slug));
+  return zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } });
+}
+
+export function saveBlob(filename: string, blob: Blob) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 
 /* ---------------- orchestration ---------------- */
