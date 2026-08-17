@@ -3,7 +3,7 @@ import type { SourceProfile, TargetId } from "../lib/engine";
 import { TARGETS, artifactSize, fmtBytes, qrMatrix, slugify } from "../lib/engine";
 import { buildCommand, downloadProjectZip } from "../lib/projects";
 import { downloadHta } from "../lib/hta";
-import { IconCheck, IconDownload, IconPhone, IconTerminal, IconWindows, IconZap } from "./Icons";
+import { IconBox, IconCheck, IconDownload, IconPhone, IconTerminal, IconWindows, IconZap } from "./Icons";
 
 interface Props {
   profile: SourceProfile;
@@ -12,9 +12,10 @@ interface Props {
   version: string;
   accent: string;
   elapsed: number;
+  onOpenVault: () => void;
 }
 
-export default function Artifacts({ profile, targets, appName, version, accent, elapsed }: Props) {
+export default function Artifacts({ profile, targets, appName, version, accent, elapsed, onOpenVault }: Props) {
   const slug = slugify(appName);
   const qr = useMemo(() => qrMatrix(window.location.href || profile.url + appName), [profile.url, appName]);
   const metas = TARGETS.filter((t) => targets.includes(t.id));
@@ -41,7 +42,14 @@ export default function Artifacts({ profile, targets, appName, version, accent, 
           {metas.length} platforms · {elapsed.toFixed(1)}s · fidelity <span className="text-gold">{profile.similarity}%</span> ·{" "}
           {fmtBytes(total)} projected
         </p>
-        <span className="ml-auto hidden font-mono text-[10px] uppercase tracking-widest text-faint md:block">
+        <button
+          onClick={onOpenVault}
+          className="ml-auto flex items-center gap-2 border border-mint/40 bg-mint/8 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-widest text-mint transition-all duration-200 hover:bg-mint/15 active:scale-95"
+          title="View or copy every generated file — works even if this frame blocks downloads"
+        >
+          <IconBox size={12} /> forge vault
+        </button>
+        <span className="hidden font-mono text-[10px] uppercase tracking-widest text-faint md:block">
           every download is runnable
         </span>
       </div>

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Artifacts from "./components/Artifacts";
 import BuildConsole from "./components/BuildConsole";
 import CloudForge from "./components/CloudForge";
+import FileVault from "./components/FileVault";
 import ConsoleInput from "./components/ConsoleInput";
 import PreviewFrames from "./components/PreviewFrames";
 import ScanReport from "./components/ScanReport";
@@ -87,6 +88,7 @@ export default function App() {
   const [buildPct, setBuildPct] = useState(0);
   const onTick = useCallback((p: number) => setBuildPct(p), []);
   const [history, setHistory] = useState<HistoryEntry[]>(loadHistory);
+  const [vaultOpen, setVaultOpen] = useState(false);
 
   const scanAbort = useRef<AbortController | null>(null);
   const prevProfile = useRef<SourceProfile | null>(null);
@@ -350,7 +352,16 @@ export default function App() {
             <span className="ml-2 hidden font-mono text-[10px] uppercase tracking-[0.22em] text-faint lg:block">
               repo / website → mobile + pc apps
             </span>
-            <span className={`ml-auto flex items-center gap-2 border px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-widest ${status.cls}`}>
+            <a
+              href={window.location.href}
+              target="_top"
+              rel="noopener"
+              title="Downloads blocked in this frame? Open the studio full-page and every save works."
+              className="ml-auto hidden shrink-0 items-center gap-1.5 border border-line px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-widest text-dim transition-colors hover:border-mint/50 hover:text-mint sm:flex"
+            >
+              new tab ↗
+            </a>
+            <span className={`ml-auto flex items-center gap-2 border px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-widest sm:ml-3 ${status.cls}`}>
               <span className={`h-1.5 w-1.5 rounded-full ${status.dot}`} />
               {status.label}
             </span>
@@ -615,6 +626,7 @@ export default function App() {
                   version={version}
                   accent={accent}
                   elapsed={buildElapsed}
+                  onOpenVault={() => setVaultOpen(true)}
                 />
                 <p className="mt-6 flex items-start gap-2 border border-dashed border-line2 bg-ink/40 p-4 font-mono text-[11px] leading-relaxed text-faint">
                   <span className="text-gold">⚠</span>
@@ -644,6 +656,18 @@ export default function App() {
             </p>
           </div>
         </footer>
+
+        {/* ---------- forge vault modal ---------- */}
+        {profile && (
+          <FileVault
+            open={vaultOpen}
+            onClose={() => setVaultOpen(false)}
+            appName={appName || profile.name}
+            profile={profile}
+            version={version}
+            accent={accent}
+          />
+        )}
 
         {/* ---------- fixed progress HUD — always in view ---------- */}
         <div className="fixed inset-x-0 bottom-0 z-50 border-t border-line bg-[#0a0f0c]/95 backdrop-blur-md">
