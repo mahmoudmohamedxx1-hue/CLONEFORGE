@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Artifacts from "./components/Artifacts";
 import BuildConsole from "./components/BuildConsole";
+import CloudForge from "./components/CloudForge";
 import ConsoleInput from "./components/ConsoleInput";
 import PreviewFrames from "./components/PreviewFrames";
 import ScanReport from "./components/ScanReport";
@@ -90,6 +91,7 @@ export default function App() {
   const buildStart = useRef(0);
   const scanSec = useRef<HTMLDivElement>(null);
   const buildSec = useRef<HTMLDivElement>(null);
+  const cloudSec = useRef<HTMLDivElement>(null);
   const artifactSec = useRef<HTMLDivElement>(null);
 
   const revealFeed = useReveal<HTMLDivElement>();
@@ -119,8 +121,7 @@ export default function App() {
     const t = setTimeout(() => {
       if (phase === "ready") scanSec.current?.scrollIntoView({ behavior: "smooth", block: "start" });
       if (phase === "building") buildSec.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-      if (phase === "done") artifactSec.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }, 120);
+        if (phase === "done") cloudSec.current?.scrollIntoView({ behavior: "smooth", block: "start" });    }, 120);
     return () => clearTimeout(t);
   }, [phase]);
 
@@ -445,11 +446,21 @@ export default function App() {
             </section>
           )}
 
-          {/* ---------- 06 artifacts ---------- */}
+          {/* ---------- 06 cloud forge ---------- */}
+          {phase === "done" && profile && (
+            <section ref={cloudSec} className="scroll-mt-24 pt-14">
+              <div className="reveal is-in">
+                <SectionHead no="06" title="Cloud forge" note="real .apk + .exe via github runners" />
+                <CloudForge profile={profile} appName={appName || profile.name} version={version} accent={accent} />
+              </div>
+            </section>
+          )}
+
+          {/* ---------- 07 artifacts ---------- */}
           {phase === "done" && profile && (
             <section ref={artifactSec} className="scroll-mt-24 pb-20 pt-14">
               <div ref={revealArtifacts} className="reveal is-in">
-                <SectionHead no="06" title="Artifacts" note="real projects · one-command builds" />
+                <SectionHead no="07" title="Artifacts" note="local builds · runnable projects" />
                 <Artifacts
                   profile={profile}
                   targets={activeTargets}

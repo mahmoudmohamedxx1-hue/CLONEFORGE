@@ -33,7 +33,7 @@ export interface GenOpts {
 /* ------------------------------------------------------------------ */
 /* The actual working app (single-file, plays real video, installable) */
 /* ------------------------------------------------------------------ */
-function workingAppHtml(o: GenOpts): string {
+export function workingAppHtml(o: GenOpts): string {
   const accent = o.accent || "#e50914";
   const app = o.appName || "NetStream";
   const catalog = JSON.stringify(STREAMS.map((s) => ({ t: s.title, g: s.tag, u: s.src })));
@@ -201,7 +201,7 @@ function appManifest(o: GenOpts): string {
   );
 }
 
-function appIcon(o: GenOpts): string {
+export function appIcon(o: GenOpts): string {
   const ac = o.accent || "#e50914";
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96"><rect width="96" height="96" rx="20" fill="#0b0d12"/><path d="M34 30l30 18-30 18V30z" fill="${ac}"/><path d="M70 30v36" stroke="${ac}" stroke-width="7" stroke-linecap="round"/></svg>`;
 }
