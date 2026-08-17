@@ -449,18 +449,19 @@ export default function App() {
           {phase === "done" && profile && (
             <section ref={artifactSec} className="scroll-mt-24 pb-20 pt-14">
               <div ref={revealArtifacts} className="reveal is-in">
-                <SectionHead no="06" title="Artifacts" note="signed & checksummed" />
+                <SectionHead no="06" title="Artifacts" note="real projects · one-command builds" />
                 <Artifacts
                   profile={profile}
                   targets={activeTargets}
                   appName={appName || profile.name}
                   version={version}
+                  accent={accent}
                   elapsed={buildElapsed}
                 />
                 <p className="mt-6 flex items-start gap-2 border border-dashed border-line2 bg-ink/40 p-4 font-mono text-[11px] leading-relaxed text-faint">
                   <span className="text-gold">⚠</span>
-                  This is an in-browser simulation of the CloneForge pipeline — downloads are signed build manifests,
-                  not compiled binaries. When you clone real projects, respect their licenses.
+                  Downloads are complete, runnable projects that compile into genuine signed installers with the one
+                  command shown per row. When you clone real projects, respect their licenses.
                 </p>
               </div>
             </section>

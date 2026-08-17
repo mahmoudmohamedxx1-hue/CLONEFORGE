@@ -133,6 +133,15 @@ interface Preset {
 }
 
 const PRESETS: Record<string, Preset> = {
+  netstream: {
+    kind: "repo",
+    name: "NetStream",
+    stack: ["React", "TypeScript", "HLS.js", "Tailwind CSS", "Vite"],
+    routes: ["/", "/home", "/movies", "/series", "/my-list", "/search"],
+    components: ["HeroBillboard", "TitleRow", "PosterCard", "VideoPlayer", "SearchBar", "NavBar", "MyListGrid"],
+    palette: { accent: "#e50914", support: "#46d369", ink: "#141414", paper: "#0b0d12" },
+    license: "MIT",
+  },
   "github.com/vercel/next.js": {
     kind: "repo",
     name: "Next.js",
@@ -413,28 +422,25 @@ async function scanGithub(
   let meta: Record<string, any>;
   try {
     const { res, ms } = await timedFetch(`https://api.github.com/repos/${owner}/${repo}`, signal, 9000, "application/vnd.github+json");
-    if (res.status === 404)
-      throw new ScanError(`GitHub says 404 — “${owner}/${repo}” doesn't exist (or is private). Check the spelling.`);
-    if (res.status === 401)
-      throw new ScanError(`GitHub rejected the request (401). Private repos need an authenticated token — this browser build is unauthenticated.`);
+    if (res.status === 404 || res.status === 401) throw new HttpError(res.status);
     if (res.status === 403 || res.status === 429) throw new HttpError(res.status);
     if (!res.ok) throw new HttpError(res.status);
     meta = await res.json();
     onLine({ text: `GET api.github.com/repos/${owner}/${repo} → 200 OK (${ms} ms)`, tone: "ok" });
   } catch (e: any) {
     if (e?.name === "AbortError") throw e;
-    if (e instanceof ScanError) throw e;
-    const rate = e instanceof HttpError && (e.status === 403 || e.status === 429);
-    onLine({
-      text: rate
-        ? `github api rate limit hit (unauthenticated · 60 req/h) — try again in ~1 min`
-        : `couldn't reach api.github.com (${e?.message ?? "network error"}) — offline or blocked?`,
-      tone: "warn",
-    });
+    const status = e instanceof HttpError ? e.status : undefined;
+    const why =
+      status === 404
+        ? `“${owner}/${repo}” is private or not on GitHub — building from an inferred mirror instead`
+        : status === 401 || status === 403 || status === 429
+          ? `github api refused/limited the request (${status}) — building from an inferred mirror instead`
+          : `couldn't reach api.github.com (${e?.message ?? "network"}) — building from an inferred mirror instead`;
+    onLine({ text: why, tone: "warn" });
     await sleep(300, signal);
     onLine({ text: `falling back to heuristic mirror (deterministic)…`, tone: "info" });
     await sleep(340, signal);
-    return heuristicProfile(url, host, "repo", rate ? "github api rate-limited — heuristic mirror" : "github unreachable — heuristic mirror");
+    return heuristicProfile(url, host, "repo", why);
   }
 
   await sleep(220, signal);

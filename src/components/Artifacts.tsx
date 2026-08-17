@@ -1,21 +1,33 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { SourceProfile, TargetId } from "../lib/engine";
-import { TARGETS, artifactSize, downloadManifest, fmtBytes, qrMatrix, slugify } from "../lib/engine";
-import { IconBox, IconCheck, IconDownload } from "./Icons";
+import { TARGETS, artifactSize, fmtBytes, qrMatrix, slugify } from "../lib/engine";
+import { buildCommand, downloadProjectZip } from "../lib/projects";
+import { IconCheck, IconDownload, IconTerminal } from "./Icons";
 
 interface Props {
   profile: SourceProfile;
   targets: TargetId[];
   appName: string;
   version: string;
+  accent: string;
   elapsed: number;
 }
 
-export default function Artifacts({ profile, targets, appName, version, elapsed }: Props) {
+export default function Artifacts({ profile, targets, appName, version, accent, elapsed }: Props) {
   const slug = slugify(appName);
   const qr = useMemo(() => qrMatrix(profile.url + appName), [profile.url, appName]);
   const metas = TARGETS.filter((t) => targets.includes(t.id));
   const total = metas.reduce((s, t) => s + artifactSize(t.id, profile), 0);
+  const [busy, setBusy] = useState<TargetId | null>(null);
+
+  const get = async (t: TargetId) => {
+    setBusy(t);
+    try {
+      await downloadProjectZip(t, { appName, profile, version, accent });
+    } finally {
+      setTimeout(() => setBusy(null), 600);
+    }
+  };
 
   return (
     <div className="border border-line bg-pane/80">
@@ -24,15 +36,24 @@ export default function Artifacts({ profile, targets, appName, version, elapsed 
           <IconCheck size={12} /> build succeeded
         </span>
         <p className="font-mono text-[11px] text-dim">
-          {metas.length} artifacts · {fmtBytes(total)} · {elapsed.toFixed(1)}s · fidelity{" "}
-          <span className="text-gold">{profile.similarity}%</span>
+          {metas.length} platforms · {elapsed.toFixed(1)}s · fidelity <span className="text-gold">{profile.similarity}%</span>
         </p>
-        <button
-          onClick={() => downloadManifest({ appName, profile, targets, version })}
-          className="ml-auto flex items-center gap-2 border border-line px-3 py-1.5 font-mono text-[11px] uppercase tracking-widest text-dim transition-all duration-200 hover:border-mint/50 hover:text-mint"
-        >
-          <IconBox size={13} /> all manifests (.json)
-        </button>
+        <span className="ml-auto hidden font-mono text-[10px] uppercase tracking-widest text-faint md:block">
+          downloads are real project zips
+        </span>
+      </div>
+
+      {/* honesty banner */}
+      <div className="border-b border-gold/30 bg-gold/8 px-6 py-3">
+        <p className="flex items-start gap-2 font-mono text-[11px] leading-relaxed text-gold">
+          <span className="mt-0.5 shrink-0">⚠</span>
+          <span>
+            <strong className="font-bold">Real, runnable projects — not fake binaries.</strong> Each download is a complete
+            project that the official toolchain compiles into a genuine, signed installer with{" "}
+            <strong className="font-bold">one command</strong> (shown under each row). A browser can't legally mint signed
+            .apk/.exe binaries, so we hand you the exact working build instead — this is the honest, actually-functional path.
+          </span>
+        </p>
       </div>
 
       <div className="grid lg:grid-cols-[1fr_280px]">
@@ -43,31 +64,38 @@ export default function Artifacts({ profile, targets, appName, version, elapsed 
             return (
               <div
                 key={t.id}
-                className="log-pop group flex items-center gap-4 px-6 py-4 transition-colors duration-200 hover:bg-pane2/70"
+                className="log-pop group px-6 py-4 transition-colors duration-200 hover:bg-pane2/70"
                 style={{ animationDelay: `${i * 90}ms` }}
               >
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center border border-line bg-ink/60 font-mono text-[10px] font-bold uppercase text-dim transition-colors group-hover:border-line2 group-hover:text-paper">
-                  .{t.ext.slice(0, 3)}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-mono text-[13px] text-paper">
-                    {slug}-{version}-{t.id}
-                    <span className="text-flare">.{t.ext}</span>
-                  </p>
-                  <p className="font-mono text-[10px] text-faint">
-                    {t.arch} · {t.shell}
-                  </p>
+                <div className="flex items-center gap-4">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center border border-line bg-ink/60 font-mono text-[10px] font-bold uppercase text-dim transition-colors group-hover:border-line2 group-hover:text-paper">
+                    .{t.ext.slice(0, 3)}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-mono text-[13px] text-paper">
+                      {slug}-v{version}-{t.id}
+                      <span className="text-flare">.zip</span>
+                      <span className="ml-2 text-[10px] uppercase tracking-widest text-mint">→ {t.ext}</span>
+                    </p>
+                    <p className="font-mono text-[10px] text-faint">
+                      {t.arch} · {t.shell}
+                    </p>
+                  </div>
+                  <span className="hidden font-mono text-[11px] text-gold sm:block">{fmtBytes(size)}</span>
+                  <button
+                    onClick={() => get(t.id)}
+                    disabled={busy === t.id}
+                    className="btn-notch flex items-center gap-2 bg-flare px-3.5 py-2 font-mono text-[11px] font-bold uppercase tracking-widest text-[#1a120c] transition-all duration-200 hover:bg-ember hover:pl-5 active:scale-95 disabled:opacity-60"
+                  >
+                    <IconDownload size={13} /> {busy === t.id ? "zipping…" : "get project"}
+                  </button>
                 </div>
-                <span className="hidden font-mono text-[11px] text-gold sm:block">{fmtBytes(size)}</span>
-                <span className="hidden font-mono text-[10px] uppercase tracking-widest text-faint md:block">
-                  sha {((profile.seed ^ t.id.length * 2654435761) >>> 0).toString(16).slice(0, 8)}
-                </span>
-                <button
-                  onClick={() => downloadManifest({ appName, profile, targets, version, target: t.id })}
-                  className="btn-notch flex items-center gap-2 bg-flare px-3.5 py-2 font-mono text-[11px] font-bold uppercase tracking-widest text-[#1a120c] transition-all duration-200 hover:bg-ember hover:pl-5 active:scale-95"
-                >
-                  <IconDownload size={13} /> get
-                </button>
+                <p className="mt-2.5 flex items-center gap-2 overflow-x-auto border-l-2 border-line2 pl-3 font-mono text-[11px] text-dim">
+                  <IconTerminal size={12} className="shrink-0 text-flare" />
+                  <span className="whitespace-nowrap">
+                    <span className="text-faint">$</span> {buildCommand(t.id)}
+                  </span>
+                </p>
               </div>
             );
           })}
@@ -85,9 +113,9 @@ export default function Artifacts({ profile, targets, appName, version, elapsed 
             </svg>
           </div>
           <div className="text-center">
-            <p className="font-mono text-[11px] uppercase tracking-widest text-mint">scan → install on device</p>
+            <p className="font-mono text-[11px] uppercase tracking-widest text-mint">scan → open web app</p>
             <p className="mt-1 max-w-[200px] font-mono text-[10px] leading-relaxed text-faint">
-              sideload link for {slug}-{version}-android.apk (demo pattern)
+              the PWA zip works instantly on any phone or PC — install it to the home screen
             </p>
           </div>
         </div>
