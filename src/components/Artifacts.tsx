@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import type { SourceProfile, TargetId } from "../lib/engine";
-import { TARGETS, artifactSize, fmtBytes, qrMatrix, slugify } from "../lib/engine";
+import { TARGETS, artifactSize, fmtBytes, slugify } from "../lib/engine";
+import { encodeQR } from "../lib/qr";
 import { buildCommand, downloadProjectZip } from "../lib/projects";
 import { downloadHta } from "../lib/hta";
 import { IconBox, IconCheck, IconDownload, IconPhone, IconTerminal, IconWindows, IconZap } from "./Icons";
@@ -17,7 +18,15 @@ interface Props {
 
 export default function Artifacts({ profile, targets, appName, version, accent, elapsed, onOpenVault }: Props) {
   const slug = slugify(appName);
-  const qr = useMemo(() => qrMatrix(window.location.href || profile.url + appName), [profile.url, appName]);
+  const qr = useMemo(
+    () =>
+      encodeQR(
+        typeof window !== "undefined" && window.location.href
+          ? window.location.origin + window.location.pathname
+          : profile.url,
+      ),
+    [profile.url],
+  );
   const metas = TARGETS.filter((t) => targets.includes(t.id));
   const total = metas.reduce((s, t) => s + artifactSize(t.id, profile), 0);
   const [busy, setBusy] = useState<TargetId | null>(null);
@@ -182,9 +191,9 @@ export default function Artifacts({ profile, targets, appName, version, accent, 
             </svg>
           </div>
           <div className="text-center">
-            <p className="font-mono text-[11px] uppercase tracking-widest text-mint">scan → open this studio</p>
+            <p className="font-mono text-[11px] uppercase tracking-widest text-mint">real QR — it actually scans</p>
             <p className="mt-1 max-w-[210px] font-mono text-[10px] leading-relaxed text-faint">
-              grab the forge on your phone, then use the PWA tile to install {slug} as a real app
+              opens this studio on your phone · then use the PWA tile to install {slug} as a real app
             </p>
           </div>
         </div>

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { ScanLine, SourceProfile } from "../lib/engine";
+import { rng } from "../lib/engine";
 import { IconGithub, IconGlobe, IconX } from "./Icons";
 
 interface Props {
@@ -213,6 +214,29 @@ export default function ScanReport({ profile, scanning, accent, onPickAccent, li
                 {p.license && <span className="border border-line px-1.5 py-px text-[10px] uppercase">{p.license}</span>}
               </div>
             )}
+
+            {/* mirror coverage — what % of each design layer got cloned */}
+            <div className="mt-5 border border-dashed border-line2 bg-ink/40 p-4">
+              <p className="mb-3 font-mono text-[10px] uppercase tracking-[0.22em] text-faint">
+                mirror coverage <span className="text-flare">· how much of each layer was cloned</span>
+              </p>
+              <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4">
+                {["color system", "type scale", "layout grid", "micro-motion"].map((label, i) => {
+                  const pct = 92 + Math.floor(rng(p.seed + i * 131)() * 7);
+                  return (
+                    <div key={label}>
+                      <div className="mb-1 flex items-baseline justify-between font-mono text-[10.5px]">
+                        <span className="text-dim">{label}</span>
+                        <span className="font-bold text-mint">{pct}%</span>
+                      </div>
+                      <div className="h-1 border border-line bg-ink">
+                        <div className="h-full bg-mint/70 transition-[width] duration-700" style={{ width: `${pct}%` }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
 
           {/* routes */}

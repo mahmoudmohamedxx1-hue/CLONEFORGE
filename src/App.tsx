@@ -62,6 +62,15 @@ function SectionHead({ no, title, note }: { no: string; title: string; note?: st
   );
 }
 
+const DEFAULT_TARGETS: Record<TargetId, boolean> = {
+  android: true,
+  ios: true,
+  windows: true,
+  macos: true,
+  linux: false,
+  pwa: true,
+};
+
 export default function App() {
   /* ---------------- state ---------------- */
   const [kind, setKind] = useState<Kind>("website");
@@ -69,14 +78,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
   const [profile, setProfile] = useState<SourceProfile | null>(null);
-  const [targets, setTargets] = useState<Record<TargetId, boolean>>({
-    android: true,
-    ios: true,
-    windows: true,
-    macos: true,
-    linux: false,
-    pwa: true,
-  });
+  const [targets, setTargets] = useState<Record<TargetId, boolean>>(DEFAULT_TARGETS);
   const [appName, setAppName] = useState("");
   const [version, setVersion] = useState("1.0.0");
   const [accent, setAccent] = useState("#ff6d3b");
@@ -460,7 +462,16 @@ export default function App() {
                     {history.map((h) => (
                       <button
                         key={h.host + h.ts}
-                        onClick={() => forge(h.url, h.kind)}
+                        onClick={() => {
+                          /* restore the exact platform loadout of that forge */
+                          const t = { ...DEFAULT_TARGETS };
+                          (Object.keys(t) as TargetId[]).forEach((id) => (t[id] = false));
+                          h.targets?.forEach((id) => {
+                            if (id in t) t[id] = true;
+                          });
+                          setTargets(t);
+                          forge(h.url, h.kind);
+                        }}
                         disabled={phase === "scanning"}
                         className="group flex items-center gap-2 border border-line bg-ink/60 px-3 py-2 text-left font-mono text-[11px] text-dim transition-all duration-200 hover:border-flare/50 hover:text-paper disabled:opacity-50"
                       >
