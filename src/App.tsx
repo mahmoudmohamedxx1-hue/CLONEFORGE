@@ -1,0 +1,707 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Artifacts from "./components/Artifacts";
+import BuildConsole from "./components/BuildConsole";
+import CloudForge from "./components/CloudForge";
+import FileVault from "./components/FileVault";
+import ConsoleInput from "./components/ConsoleInput";
+import PreviewFrames from "./components/PreviewFrames";
+import ScanReport from "./components/ScanReport";
+import TargetsPanel from "./components/TargetsPanel";
+import { IconClock, IconForge, IconRefresh, IconTrash } from "./components/Icons";
+import { useReveal } from "./hooks/useReveal";
+import type { Kind, LogLine, ScanLine, SourceProfile, TargetId } from "./lib/engine";
+import { buildScript, detectKind, heuristicProfile, normalizeUrl, scanSource, timeAgo, TARGETS } from "./lib/engine";
+
+type Phase = "idle" | "scanning" | "ready" | "building" | "done";
+
+interface HistoryEntry {
+  url: string;
+  host: string;
+  kind: Kind;
+  name: string;
+  targets: TargetId[];
+  ts: number;
+}
+
+const HISTORY_KEY = "cloneforge:history:v1";
+
+function loadHistory(): HistoryEntry[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    return raw ? (JSON.parse(raw) as HistoryEntry[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+const STATUS: Record<Phase, { label: string; cls: string; dot: string }> = {
+  idle: { label: "standby", cls: "border-line text-faint", dot: "bg-faint" },
+  scanning: { label: "scanning", cls: "border-gold/50 text-gold", dot: "bg-gold pulse-flare" },
+  ready: { label: "mirror locked", cls: "border-mint/50 text-mint", dot: "bg-mint pulse-mint" },
+  building: { label: "building", cls: "border-flare/60 text-flare", dot: "bg-flare pulse-flare" },
+  done: { label: "artifacts ready", cls: "border-mint/50 text-mint", dot: "bg-mint pulse-mint" },
+};
+
+const MARQUEE = [
+  "github repo → android apk",
+  "live website → ios app",
+  "repo → windows installer",
+  "website → macos dmg",
+  "any url → linux appimage",
+  "everything → offline pwa",
+];
+
+function SectionHead({ no, title, note }: { no: string; title: string; note?: string }) {
+  return (
+    <div className="mb-6 flex items-end gap-4">
+      <span className="font-mono text-sm font-bold text-flare">{no}</span>
+      <h2 className="font-display text-2xl font-extrabold uppercase tracking-tight text-paper sm:text-3xl">{title}</h2>
+      <span className="mb-2 h-px flex-1 bg-line" />
+      {note && <span className="mb-1 hidden font-mono text-[10px] uppercase tracking-widest text-faint sm:block">{note}</span>}
+    </div>
+  );
+}
+
+const DEFAULT_TARGETS: Record<TargetId, boolean> = {
+  android: true,
+  ios: true,
+  windows: true,
+  macos: true,
+  linux: false,
+  pwa: true,
+};
+
+export default function App() {
+  /* ---------------- state ---------------- */
+  const [kind, setKind] = useState<Kind>("website");
+  const [url, setUrl] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [profile, setProfile] = useState<SourceProfile | null>(null);
+  const [targets, setTargets] = useState<Record<TargetId, boolean>>(DEFAULT_TARGETS);
+  const [appName, setAppName] = useState("");
+  const [version, setVersion] = useState("1.0.0");
+  const [accent, setAccent] = useState("#ff6d3b");
+  const [route, setRoute] = useState("/");
+  const [lines, setLines] = useState<LogLine[]>([]);
+  const [scanLines, setScanLines] = useState<ScanLine[]>([]);
+  const [runId, setRunId] = useState(0);
+  const [buildElapsed, setBuildElapsed] = useState(0);
+  const [buildPct, setBuildPct] = useState(0);
+  const onTick = useCallback((p: number) => setBuildPct(p), []);
+  const [history, setHistory] = useState<HistoryEntry[]>(loadHistory);
+  const [vaultOpen, setVaultOpen] = useState(false);
+
+  const scanAbort = useRef<AbortController | null>(null);
+  const prevProfile = useRef<SourceProfile | null>(null);
+  const buildStart = useRef(0);
+  const scanSec = useRef<HTMLDivElement>(null);
+  const buildSec = useRef<HTMLDivElement>(null);
+  const previewSec = useRef<HTMLDivElement>(null);
+  const cloudSec = useRef<HTMLDivElement>(null);
+  const artifactSec = useRef<HTMLDivElement>(null);
+  const autoArm = useRef(false);
+
+  const revealFeed = useReveal<HTMLDivElement>();
+  const revealMarquee = useReveal<HTMLDivElement>();
+  const revealScan = useReveal<HTMLDivElement>();
+  const revealTargets = useReveal<HTMLDivElement>();
+  const revealBuild = useReveal<HTMLDivElement>();
+  const revealPreview = useReveal<HTMLDivElement>();
+  const revealArtifacts = useReveal<HTMLDivElement>();
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+    } catch {
+      /* private mode — ignore */
+    }
+  }, [history]);
+
+  useEffect(
+    () => () => {
+      scanAbort.current?.abort();
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (phase === "ready") scanSec.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      if (phase === "building") buildSec.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+        if (phase === "done") cloudSec.current?.scrollIntoView({ behavior: "smooth", block: "start" });    }, 120);
+    return () => clearTimeout(t);
+  }, [phase]);
+
+  /* ---------------- actions ---------------- */
+
+  const forge = useCallback(
+    async (raw?: string, kindOverride?: Kind) => {
+      if (phase === "scanning") return;
+      const value = raw ?? url;
+      const res = normalizeUrl(value);
+      if (!res.ok) {
+        setError(res.reason ?? "Invalid URL.");
+        return;
+      }
+      // always trust the URL itself: github/gitlab/bitbucket links force the repo path
+      const k = kindOverride ?? detectKind(res.url!);
+      if (raw || k !== kind) {
+        if (raw) setUrl(raw);
+        setKind(k);
+      }
+      setError(null);
+      setScanLines([]);
+      prevProfile.current = profile;
+      setProfile(null);
+      setPhase("scanning");
+
+      scanAbort.current?.abort();
+      const ctrl = new AbortController();
+      scanAbort.current = ctrl;
+      const push = (l: ScanLine) => setScanLines((prev) => [...prev, l]);
+      const minDuration = new Promise((r) => setTimeout(r, 1200));
+
+      const land = (prof: SourceProfile) => {
+        setProfile(prof);
+        setAppName(prof.name);
+        setRoute(prof.routes[0] ?? "/");
+        setAccent(prof.palette.accent.startsWith("#") ? prof.palette.accent : "#ff6d3b");
+        autoArm.current = true;
+        setPhase("ready");
+      };
+
+      // the scan is bulletproof: any failure recovers to an inferred mirror so the pipeline never dead-ends
+      const safeScan = scanSource(res.url!, res.host!, k, push, ctrl.signal).catch((e: unknown) => {
+        if ((e as Error)?.name === "AbortError") throw e;
+        push({ text: `✗ live scan hit a wall (${(e as Error)?.message ?? "unknown"}) — recovering`, tone: "warn" });
+        push({ text: `inferred mirror engaged · pipeline continues`, tone: "info" });
+        return heuristicProfile(res.url!, res.host!, k, "live scan unavailable — inferred mirror");
+      });
+
+      try {
+        const [prof] = await Promise.all([safeScan, minDuration]);
+        if (ctrl.signal.aborted) {
+          setProfile(prevProfile.current);
+          setPhase(prevProfile.current ? "ready" : "idle");
+          return;
+        }
+        land(prof);
+      } catch (e) {
+        if ((e as Error)?.name === "AbortError") {
+          push({ text: "— scan aborted by operator —", tone: "warn" });
+          setProfile(prevProfile.current);
+          setPhase(prevProfile.current ? "ready" : "idle");
+          return;
+        }
+        // truly unexpected — still don't dead-end: forge from an inferred mirror
+        push({ text: `unexpected fault — forging from inferred mirror anyway`, tone: "warn" });
+        land(heuristicProfile(res.url!, res.host!, k, "recovered from unexpected fault"));
+      }
+    },
+    [phase, url, kind, profile],
+  );
+
+  const cancelScan = useCallback(() => scanAbort.current?.abort(), []);
+
+  const activeTargets = useMemo(() => TARGETS.filter((t) => targets[t.id]).map((t) => t.id), [targets]);
+
+  const runBuild = useCallback(() => {
+    if (!profile || activeTargets.length === 0) return;
+    setLines(buildScript(profile, activeTargets, appName || profile.name));
+    setRunId((id) => id + 1);
+    setBuildPct(0);
+    buildStart.current = Date.now();
+    setPhase("building");
+  }, [profile, activeTargets, appName]);
+
+  const onBuildDone = useCallback(() => {
+    const secs = (Date.now() - buildStart.current) / 1000;
+    setBuildElapsed(secs);
+    setPhase("done");
+    if (profile) {
+      setHistory((prev) => {
+        const entry: HistoryEntry = {
+          url: profile.url.replace(/^https?:\/\//, "").replace(/\/$/, ""),
+          host: profile.host,
+          kind: profile.kind,
+          name: appName || profile.name,
+          targets: activeTargets,
+          ts: Date.now(),
+        };
+        return [entry, ...prev.filter((h) => h.url !== entry.url)].slice(0, 6);
+      });
+    }
+  }, [profile, appName, activeTargets]);
+
+  const onCancel = useCallback(() => setPhase("ready"), []);
+
+  /* auto-ignite: once the mirror locks, the build fires on its own — no button hunting */
+  const runBuildRef = useRef(runBuild);
+  useEffect(() => {
+    runBuildRef.current = runBuild;
+  }, [runBuild]);
+  useEffect(() => {
+    if (phase !== "ready" || !autoArm.current) return;
+    autoArm.current = false;
+    const t = setTimeout(() => runBuildRef.current(), 1400);
+    return () => clearTimeout(t);
+  }, [phase]);
+
+  const showTargets = profile && phase !== "scanning";
+  const showBuild = lines.length > 0 && (phase === "building" || phase === "done");
+  const showPreview = profile && phase !== "scanning";
+  const status = STATUS[phase];
+
+  /* pipeline tracker: always-visible breadcrumb so nobody gets lost */
+  const stepOrder = { idle: 0, scanning: 1, ready: 2, building: 2, done: 4 }[phase];
+  const jump = (r: { current: HTMLDivElement | null }) =>
+    r.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const TRACK: { label: string; go: (() => void) | null }[] = [
+    { label: "source", go: null },
+    { label: "scan", go: () => jump(scanSec) },
+    { label: "build", go: showBuild ? () => jump(buildSec) : null },
+    { label: "preview", go: () => jump(previewSec) },
+    { label: "installers", go: phase === "done" ? () => jump(cloudSec) : null },
+  ];
+  const ticker =
+    phase === "scanning"
+      ? { text: "ingesting source — report lands in section 02", go: () => jump(scanSec) }
+      : phase === "ready"
+        ? { text: "mirror locked — auto-igniting the build…", go: () => jump(buildSec) }
+        : phase === "building"
+          ? { text: "compiling every armed platform live — watch the console", go: () => jump(buildSec) }
+          : phase === "done"
+            ? { text: "pipeline done — APK + EXE paths are in section 06", go: () => jump(cloudSec) }
+            : null;
+
+  /* fixed HUD: real progress pinned to the viewport so it's impossible to miss */
+  const hud = {
+    idle: {
+      label: "standby — feed the forge a repo or site",
+      pct: 0,
+      bar: "bg-line2",
+      text: "text-faint",
+      dot: "bg-faint",
+      go: null as (() => void) | null,
+      btn: "",
+    },
+    scanning: {
+      label: `ingesting source · ${scanLines.length} steps logged`,
+      pct: Math.min(96, 8 + scanLines.length * 11),
+      bar: "bar-stripes bg-gold",
+      text: "text-gold",
+      dot: "bg-gold pulse-flare",
+      go: () => jump(scanSec),
+      btn: "watch scan",
+    },
+    ready: {
+      label: "mirror locked — auto-igniting the build…",
+      pct: 100,
+      bar: "bg-mint",
+      text: "text-mint",
+      dot: "bg-mint pulse-mint",
+      go: () => jump(buildSec),
+      btn: "to console",
+    },
+    building: {
+      label: `compiling ${activeTargets.length} platforms`,
+      pct: buildPct,
+      bar: "bar-stripes bg-flare",
+      text: "text-flare",
+      dot: "bg-flare pulse-flare",
+      go: () => jump(buildSec),
+      btn: "watch build",
+    },
+    done: {
+      label: "build complete — apk + exe paths ready",
+      pct: 100,
+      bar: "bg-mint",
+      text: "text-mint",
+      dot: "bg-mint pulse-mint",
+      go: () => jump(cloudSec),
+      btn: "get installers",
+    },
+  }[phase];
+
+  /* ---------------- render ---------------- */
+
+  return (
+    <div className="relative min-h-screen">
+      {/* ambient stage */}
+      <div className="bg-stage">
+        <div className="bg-grid" />
+        <div className="bg-glow" />
+        <div className="bg-noise" />
+      </div>
+      {phase === "building" && <div className="scanline" />}
+
+      <div className="relative z-10">
+        {/* ---------- header ---------- */}
+        <header className="sticky top-0 z-40 border-b border-line bg-ink/85 backdrop-blur-md">
+          <div className="mx-auto flex max-w-7xl items-center gap-4 px-5 py-3.5 sm:px-8">
+            <a href="#top" className="group flex items-center gap-2.5">
+              <span className="flex h-8 w-8 items-center justify-center bg-flare text-ink transition-transform duration-300 group-hover:rotate-[18deg]">
+                <IconForge size={18} strokeWidth={2.2} />
+              </span>
+              <span className="font-display text-lg font-extrabold uppercase tracking-tight text-paper">
+                Clone<span className="text-flare">forge</span>
+              </span>
+              <span className="mt-0.5 hidden border border-line px-1.5 py-px font-mono text-[9px] uppercase tracking-widest text-faint sm:block">
+                v0.9.4-β
+              </span>
+            </a>
+            <span className="ml-2 hidden font-mono text-[10px] uppercase tracking-[0.22em] text-faint lg:block">
+              repo / website → mobile + pc apps
+            </span>
+            <a
+              href={window.location.href}
+              target="_top"
+              rel="noopener"
+              title="Downloads blocked in this frame? Open the studio full-page and every save works."
+              className="ml-auto hidden shrink-0 items-center gap-1.5 border border-line px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-widest text-dim transition-colors hover:border-mint/50 hover:text-mint sm:flex"
+            >
+              new tab ↗
+            </a>
+            <span className={`ml-auto flex items-center gap-2 border px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-widest sm:ml-3 ${status.cls}`}>
+              <span className={`h-1.5 w-1.5 rounded-full ${status.dot}`} />
+              {status.label}
+            </span>
+          </div>
+          {/* pipeline tracker — always visible, click to jump */}
+          <div className="border-t border-line/70 bg-[#0a0f0c]/95">
+            <div className="mx-auto flex max-w-7xl items-center gap-1 overflow-x-auto px-5 py-2 sm:px-8">
+              <span className="mr-2 shrink-0 font-mono text-[9px] uppercase tracking-[0.25em] text-faint">
+                pipeline
+              </span>
+              {TRACK.map((s, i) => {
+                const st = i < stepOrder ? "done" : i === stepOrder ? "active" : "wait";
+                return (
+                  <span key={s.label} className="flex items-center gap-1">
+                    {i > 0 && <span className="px-1 font-mono text-[10px] text-faint">›</span>}
+                    <button
+                      onClick={s.go ?? undefined}
+                      disabled={!s.go}
+                      className={`flex items-center gap-1.5 border px-2 py-0.5 font-mono text-[9.5px] uppercase tracking-widest transition-all duration-200 ${
+                        st === "done"
+                          ? "border-mint/30 bg-mint/5 text-mint/80"
+                          : st === "active"
+                            ? "border-flare/50 bg-flare/10 text-flare"
+                            : "border-transparent text-faint"
+                      } ${s.go ? "cursor-pointer hover:border-line2 hover:text-paper" : "cursor-default"}`}
+                    >
+                      <span
+                        className={`h-1.5 w-1.5 rounded-full ${
+                          st === "done" ? "bg-mint" : st === "active" ? "bg-flare pulse-flare" : "bg-line2"
+                        }`}
+                      />
+                      {s.label}
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        </header>
+
+        <main id="top" className="mx-auto max-w-7xl px-5 sm:px-8">
+          {/* ---------- opening: the feed ---------- */}
+          <section ref={revealFeed} className="reveal grid items-start gap-12 py-12 sm:py-16 lg:grid-cols-12">
+            <div className="lg:col-span-7">
+              <p className="mb-5 flex items-center gap-3 font-mono text-[11px] uppercase tracking-[0.28em] text-mint">
+                <span className="h-px w-8 bg-mint/60" />
+                can you clone a repo or a site into real apps? — yes. feed it below
+              </p>
+              <h1 className="font-display text-[2.6rem] font-extrabold uppercase leading-[0.95] tracking-tight text-paper sm:text-6xl xl:text-[4.6rem]">
+                Clone any
+                <br />
+                repo <span className="text-faint">or</span> site.
+                <br />
+                <span className="relative inline-block text-flare">
+                  Ship 6 apps.
+                  <svg className="absolute -bottom-2 left-0 w-full" viewBox="0 0 300 12" fill="none" preserveAspectRatio="none">
+                    <path d="M2 9C60 3 180 2 298 7" stroke="#FF6D3B" strokeWidth="3.5" strokeLinecap="round" opacity="0.55" />
+                  </svg>
+                </span>
+              </h1>
+              <p className="mt-7 max-w-xl text-[15px] leading-relaxed text-dim">
+                CloneForge connects <strong className="font-semibold text-mint">live to the GitHub API</strong> — repo
+                metadata, the full file tree, even <span className="font-mono text-[13px]">package.json</span> — or
+                fingerprints a <strong className="font-semibold text-paper">live website</strong>, mirrors its
+                interface, adapts the layout for touch and desktop, then packages signed shells for{" "}
+                <strong className="font-semibold text-paper">Android, iOS, Windows, macOS, Linux</strong> and an
+                offline <strong className="font-semibold text-paper">PWA</strong> — in one pass.
+              </p>
+
+              {/* process rail */}
+              <ol className="mt-9 flex flex-wrap items-center gap-x-3 gap-y-2 font-mono text-[11px] uppercase tracking-widest">
+                {["ingest", "translate", "adapt", "package", "sign"].map((s, i) => (
+                  <li key={s} className="flex items-center gap-3">
+                    <span className="flex items-center gap-2 border border-line bg-pane/70 px-2.5 py-1.5 text-dim transition-colors duration-200 hover:border-flare/50 hover:text-paper">
+                      <span className="text-flare">{String(i + 1).padStart(2, "0")}</span> {s}
+                    </span>
+                    {i < 4 && <span className="text-faint">→</span>}
+                  </li>
+                ))}
+              </ol>
+
+              {history.length > 0 && (
+                <div className="mt-10 border border-line bg-pane/60">
+                  <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
+                    <p className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.22em] text-faint">
+                      <IconClock size={12} /> recent forges
+                    </p>
+                    <button
+                      onClick={() => setHistory([])}
+                      className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-widest text-faint transition-colors hover:text-blood"
+                    >
+                      <IconTrash size={11} /> clear
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap gap-2 p-4">
+                    {history.map((h) => (
+                      <button
+                        key={h.host + h.ts}
+                        onClick={() => {
+                          /* restore the exact platform loadout of that forge */
+                          const t = { ...DEFAULT_TARGETS };
+                          (Object.keys(t) as TargetId[]).forEach((id) => (t[id] = false));
+                          h.targets?.forEach((id) => {
+                            if (id in t) t[id] = true;
+                          });
+                          setTargets(t);
+                          forge(h.url, h.kind);
+                        }}
+                        disabled={phase === "scanning"}
+                        className="group flex items-center gap-2 border border-line bg-ink/60 px-3 py-2 text-left font-mono text-[11px] text-dim transition-all duration-200 hover:border-flare/50 hover:text-paper disabled:opacity-50"
+                      >
+                        <span className={h.kind === "repo" ? "text-mint" : "text-flare"}>{h.kind === "repo" ? "⌥" : "◍"}</span>
+                        <span>
+                          <span className="block text-paper">{h.name}</span>
+                          <span className="block text-[9px] text-faint">
+                            {h.targets.length} targets · {timeAgo(h.ts)}
+                          </span>
+                        </span>
+                        <IconRefresh size={12} className="opacity-0 transition-opacity group-hover:opacity-100" />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="lg:col-span-5">
+              <ConsoleInput
+                kind={kind}
+                setKind={(k) => {
+                  setKind(k);
+                  setError(null);
+                }}
+                url={url}
+                setUrl={(u) => {
+                  setUrl(u);
+                  setError(null);
+                }}
+                onForge={forge}
+                scanning={phase === "scanning"}
+                error={error}
+              />
+              {ticker && (
+                <p className="log-pop mt-3 flex items-center gap-2.5 border border-line bg-pane/80 px-4 py-3 font-mono text-[11px] text-dim">
+                  <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${status.dot}`} />
+                  <span className="flex-1">{ticker.text}</span>
+                  <button
+                    onClick={ticker.go}
+                    className="shrink-0 font-mono text-[10px] font-bold uppercase tracking-widest text-flare transition-colors hover:text-ember"
+                  >
+                    jump ↓
+                  </button>
+                </p>
+              )}
+            </div>
+          </section>
+
+          {/* ---------- marquee ---------- */}
+          <div ref={revealMarquee} className="reveal overflow-hidden border-y border-line bg-pane/50">
+            <div className="marquee-track flex w-max items-center gap-8 whitespace-nowrap py-3 font-mono text-[11px] uppercase tracking-[0.28em] text-faint">
+              {[0, 1].map((dup) => (
+                <span key={dup} className="flex items-center gap-8" aria-hidden={dup === 1}>
+                  {MARQUEE.map((m) => (
+                    <span key={m + dup} className="flex items-center gap-8">
+                      <span className="transition-colors hover:text-flare">{m}</span>
+                      <span className="text-flare/60">✦</span>
+                    </span>
+                  ))}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          {/* ---------- 02 scan report ---------- */}
+          <section ref={scanSec} className="scroll-mt-28 pt-14">
+            <div ref={revealScan} className="reveal">
+              <SectionHead no="02" title="Scan report" note={profile ? `source: ${profile.host}` : "awaiting source"} />
+              <ScanReport
+                profile={profile}
+                scanning={phase === "scanning"}
+                accent={accent}
+                onPickAccent={setAccent}
+                lines={scanLines}
+                onCancelScan={cancelScan}
+              />
+            </div>
+          </section>
+
+          {/* ---------- 03 targets ---------- */}
+          {showTargets && profile && (
+            <section className="scroll-mt-28 pt-14">
+              <div ref={revealTargets} className="reveal">
+                <SectionHead no="03" title="Targets & identity" note={`${activeTargets.length} platforms armed`} />
+                <TargetsPanel
+                  profile={profile}
+                  targets={targets}
+                  toggle={(t) => setTargets((prev) => ({ ...prev, [t]: !prev[t] }))}
+                  appName={appName}
+                  setAppName={setAppName}
+                  version={version}
+                  setVersion={setVersion}
+                  accent={accent}
+                  setAccent={setAccent}
+                  onRun={runBuild}
+                  disabled={phase === "building"}
+                />
+              </div>
+            </section>
+          )}
+
+          {/* ---------- 04 build console ---------- */}
+          {showBuild && (
+            <section ref={buildSec} className="scroll-mt-28 pt-14">
+              <div ref={revealBuild} className="reveal is-in">
+                <SectionHead
+                  no="04"
+                  title="Build console"
+                  note={phase === "done" ? "pipeline finished" : "streaming…"}
+                />
+                <BuildConsole
+                  key={runId}
+                  lines={lines}
+                  targets={activeTargets}
+                  running={phase === "building"}
+                  finished={phase === "done"}
+                  onDone={onBuildDone}
+                  onCancel={onCancel}
+                  onTick={onTick}
+                />
+              </div>
+            </section>
+          )}
+
+          {/* ---------- 05 preview ---------- */}
+          {showPreview && profile && (
+            <section ref={previewSec} className="scroll-mt-28 pt-14">
+              <div ref={revealPreview} className="reveal">
+                <SectionHead no={phase === "done" ? "05" : "04"} title="Live preview" note="same bundle · every shell" />
+                <div className="border border-line bg-pane/60 p-6 sm:p-10">
+                  <PreviewFrames
+                    profile={profile}
+                    appName={appName || profile.name}
+                    accent={accent}
+                    route={route}
+                    setRoute={setRoute}
+                  />
+                </div>
+              </div>
+            </section>
+          )}
+
+          {/* ---------- 06 cloud forge ---------- */}
+          {phase === "done" && profile && (
+            <section ref={cloudSec} className="scroll-mt-28 pt-14">
+              <div className="reveal is-in">
+                <SectionHead no="06" title="Cloud forge" note="real .apk + .exe via github runners" />
+                <CloudForge profile={profile} appName={appName || profile.name} version={version} accent={accent} />
+              </div>
+            </section>
+          )}
+
+          {/* ---------- 07 artifacts ---------- */}
+          {phase === "done" && profile && (
+            <section ref={artifactSec} className="scroll-mt-28 pb-20 pt-14">
+              <div ref={revealArtifacts} className="reveal is-in">
+                <SectionHead no="07" title="Artifacts" note="local builds · runnable projects" />
+                <Artifacts
+                  profile={profile}
+                  targets={activeTargets}
+                  appName={appName || profile.name}
+                  version={version}
+                  accent={accent}
+                  elapsed={buildElapsed}
+                  onOpenVault={() => setVaultOpen(true)}
+                />
+                <p className="mt-6 flex items-start gap-2 border border-dashed border-line2 bg-ink/40 p-4 font-mono text-[11px] leading-relaxed text-faint">
+                  <span className="text-gold">⚠</span>
+                  Downloads are complete, runnable projects that compile into genuine signed installers with the one
+                  command shown per row. When you clone real projects, respect their licenses.
+                </p>
+              </div>
+            </section>
+          )}
+
+          {phase !== "done" && <div className="pb-24" />}
+        </main>
+
+        {/* ---------- footer ---------- */}
+        <footer className="border-t border-line bg-pane/40 pb-20">
+          <div className="mx-auto flex max-w-7xl flex-col items-start justify-between gap-4 px-5 py-8 sm:flex-row sm:items-center sm:px-8">
+            <div className="flex items-center gap-2.5">
+              <span className="flex h-6 w-6 items-center justify-center bg-flare text-ink">
+                <IconForge size={13} strokeWidth={2.4} />
+              </span>
+              <p className="font-mono text-[11px] text-dim">
+                <span className="font-bold text-paper">CLONEFORGE</span> — one source, every screen.
+              </p>
+            </div>
+            <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-faint">
+              built in the browser · no servers harmed · © {new Date().getFullYear()}
+            </p>
+          </div>
+        </footer>
+
+        {/* ---------- forge vault modal ---------- */}
+        {profile && (
+          <FileVault
+            open={vaultOpen}
+            onClose={() => setVaultOpen(false)}
+            appName={appName || profile.name}
+            profile={profile}
+            version={version}
+            accent={accent}
+          />
+        )}
+
+        {/* ---------- fixed progress HUD — always in view ---------- */}
+        <div className="fixed inset-x-0 bottom-0 z-50 border-t border-line bg-[#0a0f0c]/95 backdrop-blur-md">
+          <div className="mx-auto flex max-w-7xl items-center gap-4 px-5 py-2.5 sm:px-8">
+            <span className={`h-2 w-2 shrink-0 rounded-full ${hud.dot}`} />
+            <p className={`w-44 shrink-0 truncate font-mono text-[10px] uppercase tracking-widest sm:w-auto sm:flex-1 ${hud.text}`}>
+              {hud.label}
+            </p>
+            <div className="hidden h-2 min-w-0 flex-1 border border-line bg-ink sm:block">
+              <div className={`h-full transition-[width] duration-300 ease-out ${hud.bar}`} style={{ width: `${hud.pct}%` }} />
+            </div>
+            <span className={`shrink-0 font-mono text-[11px] font-bold tabular-nums ${hud.text}`}>{hud.pct}%</span>
+            {hud.go && (
+              <button
+                onClick={hud.go}
+                className="btn-notch shrink-0 border border-line px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-widest text-dim transition-all duration-200 hover:border-flare hover:text-flare active:scale-95"
+              >
+                {hud.btn} ↓
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
